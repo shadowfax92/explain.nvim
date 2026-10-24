@@ -48,9 +48,11 @@ cases["an agent can build a tour over HTTP and the human can read it"] = functio
   end } })
   local path, dir = h.file(h.numbered(40), "init.lua")
   vim.cmd.cd(dir)
+  vim.fn.setreg('"', "my last yank")
   local url = explain.start()
   h.ok(url:match("^http://127%.0%.0%.1:%d+/%x+/$"), url)
-  h.contains(vim.fn.getreg('"'), "curl -s " .. url)
+  h.eq("my last yank", vim.fn.getreg('"'), "start leaves the unnamed register alone")
+  h.contains(_G.notifications[#_G.notifications], "curl -s " .. url)
   h.contains(explain.statusline(), "explain")
 
   local guide = curl({ url })
@@ -86,6 +88,7 @@ cases["an agent can build a tour over HTTP and the human can read it"] = functio
   h.eq({ "pane", "run", "w1Q:pR" }, { nudges[1][2], nudges[1][3], nudges[1][4] })
   h.contains(nudges[1][5], "[explain]")
   h.contains(nudges[1][5], url)
+  h.eq(nil, nudges[1][5]:find("after="), "a debounced nudge must not point past earlier replies")
 
   -- A waiting agent hears the next reply through its open request instead.
   local waited
@@ -141,6 +144,97 @@ cases["the command starts, reports and stops"] = function()
   h.contains(explain.statusline(), "explain")
   vim.cmd("Explain stop")
   h.eq("", explain.statusline())
+end
+
+
+cases["agents read ranges where the human's edits moved them"] = function()
+  fresh()
+  explain.setup({ nudge = false })
+  local path, dir = h.file(h.numbered(40), "init.lua")
+  vim.cmd.cd(dir)
+  local url = explain.start()
+  local tour_id = post(url, "create_tour", { title = "T" }).structuredContent.tour_id
+  post(url, "add_step", { tour_id = tour_id, path = "init.lua", start_line = 10, end_line = 12, title = "s", note = "n" })
+  explain.next()
+  h.eq(path, vim.api.nvim_buf_get_name(0))
+  vim.api.nvim_buf_set_lines(0, 0, 0, false, { "new 1", "new 2" })
+  local step = post(url, "get_tour", { tour_id = tour_id }).structuredContent.steps[1]
+  h.eq({ 12, 14 }, { step.start_line, step.end_line })
+  explain.stop()
+end
+
+cases["stop from inside the panel cleans up everything"] = function()
+  fresh()
+  explain.setup({ nudge = false })
+  local path, dir = h.file(h.numbered(40), "init.lua")
+  vim.cmd.cd(dir)
+  local url = explain.start()
+  post(url, "create_tour", { title = "T" })
+  h.wait_for(function()
+    return panel_win() ~= nil
+  end, 2000)
+  vim.cmd.edit(path)
+  explain.ask({ start_line = 1, end_line = 2 })
+  local composer = vim.api.nvim_get_current_win()
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "unsent draft" })
+  vim.cmd("stopinsert")
+  vim.api.nvim_set_current_win(panel_win())
+  explain.stop()
+  h.eq(nil, panel_win())
+  h.eq(false, vim.api.nvim_win_is_valid(composer), "stop closes the composer")
+  h.eq("", vim.fn.maparg("]x", "n"), "keymaps are removed")
+  local next_url = explain.start()
+  h.eq({}, post(next_url, "read_messages", {}).structuredContent.messages, "no draft leaks into a new session")
+  explain.stop()
+end
+
+cases["stop answers an open wait with 503"] = function()
+  fresh()
+  explain.setup({ nudge = false })
+  local _, dir = h.file(h.numbered(5), "init.lua")
+  vim.cmd.cd(dir)
+  local url = explain.start()
+  local result
+  vim.system({
+    "curl", "-s", "-w", "\n%{http_code}", "--max-time", "8", "-X", "POST", url .. "tools/wait_for_human",
+    "--data-binary", vim.json.encode({ after = 0, timeout_s = 5 }),
+  }, { text = true }, function(out)
+    result = out.stdout
+  end)
+  vim.wait(300)
+  explain.stop()
+  h.wait_for(function()
+    return result ~= nil
+  end, 3000)
+  h.contains(result, "explain session ended")
+  h.contains(result, "\n503")
+end
+
+cases["a timed-out long-poll does not swallow the next nudge"] = function()
+  fresh()
+  local nudges = {}
+  explain.setup({ nudge = { delay_ms = 10, run = function(argv)
+    nudges[#nudges + 1] = argv
+  end } })
+  local _, dir = h.file(h.numbered(40), "init.lua")
+  vim.cmd.cd(dir)
+  local url = explain.start()
+  local tour_id = post(url, "create_tour", { title = "T" }).structuredContent.tour_id
+  post(url, "add_step", { tour_id = tour_id, path = "init.lua", start_line = 1, end_line = 2, title = "s", note = "n" })
+  curl({
+    "--max-time", "1", "-X", "POST", url .. "tools/wait_for_human", "-H", "X-Herdr-Pane: w1Q:pR",
+    "--data-binary", vim.json.encode({ after = 0, timeout_s = 30 }),
+  })
+  vim.wait(200)
+  explain.next()
+  explain.reply()
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "still there?" })
+  vim.cmd("stopinsert")
+  press("<CR>")
+  h.wait_for(function()
+    return #nudges == 1
+  end, 2000, "the agent is nudged although its curl gave up")
+  explain.stop()
 end
 
 return cases

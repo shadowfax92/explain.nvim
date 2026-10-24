@@ -105,7 +105,8 @@ local function call_tool(session, req, respond, name)
     end
     args = value
   end
-  local ctx = { pane = req.headers["x-herdr-pane"] }
+  -- on_cancel lets a long-poll forget an agent whose request dropped.
+  local ctx = { pane = req.headers["x-herdr-pane"], on_cancel = req.on_disconnect }
   session:call(name, args, ctx, function(result)
     if result.status == "unknown_tool" then
       return protocol_error(respond, 404, -32602, result.text)
@@ -143,10 +144,11 @@ function M.handler(session)
     if req.method ~= "POST" then
       return protocol_error(respond, 405, -32600, "use POST to call a tool")
     end
-    local ok, err = pcall(call_tool, session, req, respond, name)
+    local ok, err = xpcall(call_tool, debug.traceback, session, req, respond, name)
     if not ok then
       vim.notify("[explain] tool " .. name .. " failed: " .. tostring(err), vim.log.levels.DEBUG)
-      protocol_error(respond, 500, -32603, "internal error in " .. name .. ": " .. tostring(err))
+      local first_line = tostring(err):match("^[^\n]*")
+      protocol_error(respond, 500, -32603, "internal error in " .. name .. ": " .. first_line)
     end
   end
 end

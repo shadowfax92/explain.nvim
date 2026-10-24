@@ -53,8 +53,8 @@ local function agent_line(url)
   return ("Annotate code for me in my editor with explain. Start by running: curl -s %s"):format(url)
 end
 
+-- The system clipboard only: the unnamed register holds the human's last yank.
 local function copy(text)
-  vim.fn.setreg('"', text)
   pcall(vim.fn.setreg, "+", text)
 end
 
@@ -118,13 +118,14 @@ local function on_event(event)
     if event.author == "agent" and (event.step_id ~= state.view.step_id or not state.panel:is_open()) then
       notify(("%s replied on %q"):format(state.session.tour_by_id[step.tour_id].agent or "agent", step.title))
     elseif event.author == "human" and event.needs_nudge and state.nudge then
+      -- No cursor hint: nudges are debounced, and a cursor taken from the
+      -- latest message would skip earlier ones. The agent keeps its own.
       state.nudge:send(
         event.pane,
-        ('[explain] New %s from the human on "%s". Call read_messages at %s (after=%d).'):format(
+        ('[explain] New %s from the human on "%s". Call read_messages at %s with your last cursor.'):format(
           event.kind == "question" and "question" or "reply",
           step.title,
-          state.server.url,
-          event.seq - 1
+          state.server.url
         )
       )
     end
@@ -154,7 +155,8 @@ local function code_window()
       return win
     end
   end
-  return vim.api.nvim_open_win(vim.api.nvim_create_buf(true, false), false, { split = "left", win = state.panel.win })
+  local beside = state.panel:is_open() and state.panel.win or 0
+  return vim.api.nvim_open_win(vim.api.nvim_create_buf(true, false), false, { split = "left", win = beside })
 end
 
 local function show(path, line, focus)
@@ -226,11 +228,12 @@ function M.reply()
   if not state or not state.view.step_id then
     return notify("no current step; ]x moves to the first one", vim.log.levels.WARN)
   end
-  local step_id = state.view.step_id
+  local step_id, session = state.view.step_id, state.session
   local _, _, position = find_step(step_id)
   state.panel:compose({ title = ("reply on step %d"):format(position) }, function(text)
-    if state and state.session.step_by_id[step_id] then
-      state.session:reply(step_id, text)
+    -- Step ids restart in a new session; only deliver to the one asked in.
+    if state and state.session == session then
+      session:reply(step_id, text)
     end
   end)
 end
@@ -253,11 +256,12 @@ function M.ask(range)
     return notify("select lines in a file to ask about them", vim.log.levels.WARN)
   end
   local title = ("ask about %s:%d-%d"):format(vim.fn.fnamemodify(path, ":t"), range.start_line, range.end_line)
+  local session = state.session
   state.panel:compose({ title = title }, function(text)
-    if not state then
+    if not state or state.session ~= session then
       return
     end
-    local asked = state.session:ask({
+    local asked = session:ask({
       path = path,
       start_line = range.start_line,
       end_line = range.end_line,
@@ -346,7 +350,16 @@ function M.start()
     return state.server.url
   end
   highlight.setup()
-  local session = Session.new({ cwd = vim.fn.getcwd() })
+  local marks
+  local session = Session.new({
+    cwd = vim.fn.getcwd(),
+    -- Agents read ranges where the human's edits moved them.
+    live_range = function(step_id, revision)
+      if marks then
+        return marks:live_range(step_id, revision)
+      end
+    end,
+  })
   local token = (vim.uv.random(4):gsub(".", function(char)
     return ("%02x"):format(char:byte())
   end))
@@ -363,11 +376,12 @@ function M.start()
     nudge = nudge_opts and Nudge.new(type(nudge_opts) == "table" and nudge_opts or nil) or nil,
     group = vim.api.nvim_create_augroup("explain", { clear = true }),
   }
-  state.marks = Marks.new({
-    on_unload = function(step_id, first, last)
-      session:set_range(step_id, first, last)
+  marks = Marks.new({
+    on_unload = function(step_id, first, last, revision)
+      session:set_range(step_id, first, last, revision)
     end,
   })
+  state.marks = marks
   state.panel = Panel.new({
     display_path = function(path)
       return session:display_path(path)
@@ -390,7 +404,7 @@ function M.start()
     group = state.group,
     callback = function()
       local win = vim.api.nvim_get_current_win()
-      if is_code_window(win) then
+      if state and is_code_window(win) then
         state.last_code_win = win
       end
     end,
@@ -405,27 +419,31 @@ function M.start()
 end
 
 ---Stops serving and clears every tour, band and panel.
+---
+---Order matters: autocmds go first so closing windows cannot call back into
+---a half-torn-down controller; the transport answers open long-polls with
+---503 before the session closes (which would otherwise answer them itself).
 function M.stop()
   if not state then
     return
   end
   local current = state
   state = nil
+  pcall(vim.api.nvim_del_augroup_by_id, current.group)
   current.unsubscribe()
-  current.session:close()
   current.server:stop()
+  current.session:close()
   if current.nudge then
     current.nudge:close()
   end
   current.marks:clear()
-  current.panel:close()
+  pcall(current.panel.close, current.panel)
   if current.panel.buf and vim.api.nvim_buf_is_valid(current.panel.buf) then
-    vim.api.nvim_buf_delete(current.panel.buf, { force = true })
+    pcall(vim.api.nvim_buf_delete, current.panel.buf, { force = true })
   end
   for _, keymap in ipairs(current.keymaps) do
     pcall(vim.keymap.del, keymap[1], keymap[2])
   end
-  pcall(vim.api.nvim_del_augroup_by_id, current.group)
   vim.cmd("redrawstatus")
 end
 

@@ -34,6 +34,7 @@ Server.__index = Server
 ---@field headers table<string, string>  lower-cased names
 ---@field body string
 ---@field base_url string  e.g. "http://127.0.0.1:47123/k7f2/"
+---@field on_disconnect fun(callback: fun())  runs on the main loop if the client leaves before respond()
 
 ---Starts listening on 127.0.0.1. Returns the server, or nil and an error.
 ---@param opts { token: string, handler: fun(req: explain.Request, respond: fun(status: integer, headers: table, body: string)), port?: integer, max_body?: integer }
@@ -83,7 +84,7 @@ end
 function Server:_accept()
   local client = vim.uv.new_tcp()
   self.tcp:accept(client)
-  local conn = { client = client, buffer = "" }
+  local conn = { client = client, buffer = "", on_disconnect = {} }
   self.connections[conn] = true
 
   -- Answers once, then closes. Safe to call from any context, any number of times.
@@ -107,7 +108,17 @@ function Server:_accept()
 
   client:read_start(function(err, chunk)
     if err or not chunk then
-      -- The peer went away. A late respond() becomes a no-op.
+      -- The peer went away. A late respond() becomes a no-op, and handlers
+      -- waiting on a long-poll hear about it so they can stop waiting.
+      if conn.dispatched and not conn.done then
+        local listeners = conn.on_disconnect
+        vim.schedule(function()
+          for _, listener in ipairs(listeners) do
+            listener()
+          end
+        end)
+      end
+      conn.left = true
       conn.done = true
       self.connections[conn] = nil
       if not client:is_closing() then
@@ -191,6 +202,13 @@ function Server:_dispatch(conn, body)
     return plain(conn, 404, "not found")
   end
   local req = { method = head.method, path = path, headers = head.headers, body = body, base_url = self.url }
+  req.on_disconnect = function(listener)
+    if conn.left then
+      vim.schedule(listener) -- left before the handler ran
+    else
+      table.insert(conn.on_disconnect, listener)
+    end
+  end
   vim.schedule(function()
     local ok, err = pcall(self.handler, req, conn.respond)
     if not ok then
@@ -210,7 +228,7 @@ function Server:stop()
   end
   local open = vim.tbl_keys(self.connections)
   for _, conn in ipairs(open) do
-    plain(conn, 503, "explain stopped")
+    plain(conn, 503, "explain session ended (the human ran :Explain stop)")
   end
 end
 

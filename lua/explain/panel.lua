@@ -122,8 +122,19 @@ function Panel:open()
 end
 
 function Panel:close()
+  if self.composer then
+    self.composer.cancel()
+  end
   if self:is_open() then
-    vim.api.nvim_win_close(self.win, true)
+    local others = vim.tbl_filter(function(win)
+      return win ~= self.win and vim.api.nvim_win_get_config(win).relative == ""
+    end, vim.api.nvim_list_wins())
+    if #others == 0 then
+      -- Neovim refuses to close its last window (E444); leave an empty buffer.
+      vim.api.nvim_win_set_buf(self.win, vim.api.nvim_create_buf(true, false))
+    else
+      vim.api.nvim_win_close(self.win, true)
+    end
   end
   self.win = nil
   if self.resize_group then
@@ -140,8 +151,25 @@ function Panel:toggle()
   end
 end
 
--- Greedy word wrap by display width; overlong words are split.
+-- Splits off the longest head of `word` that fits `width` display cells,
+-- always at least one character so wrapping makes progress.
+local function take_cells(word, width)
+  local chars = vim.fn.split(word, "\\zs")
+  local head, cells = "", 0
+  for index, char in ipairs(chars) do
+    local char_width = vim.fn.strdisplaywidth(char)
+    if index > 1 and cells + char_width > width then
+      return head, table.concat(chars, "", index)
+    end
+    head, cells = head .. char, cells + char_width
+  end
+  return head, ""
+end
+
+-- Greedy word wrap by display width; overlong words are split by cells, so
+-- wide (CJK) text wraps too. Widths below one cell still wrap, one char a line.
 local function wrap(text, width)
+  width = math.max(width, 1)
   local out = {}
   for _, paragraph in ipairs(vim.split(text, "\n", { plain = true })) do
     local line = ""
@@ -150,8 +178,9 @@ local function wrap(text, width)
         if line ~= "" then
           out[#out + 1], line = line, ""
         end
-        out[#out + 1] = vim.fn.strcharpart(word, 0, width)
-        word = vim.fn.strcharpart(word, width)
+        local head
+        head, word = take_cells(word, width)
+        out[#out + 1] = head
       end
       local candidate = line == "" and word or (line .. " " .. word)
       if vim.fn.strdisplaywidth(candidate) > width then
@@ -169,7 +198,10 @@ local function truncate(text, width)
   if vim.fn.strdisplaywidth(text) <= width then
     return text
   end
-  return vim.fn.strcharpart(text, 0, math.max(width - 1, 0)) .. "…"
+  if width <= 1 then
+    return "…"
+  end
+  return (take_cells(text, width - 1)) .. "…"
 end
 
 local function ago(timestamp)
@@ -334,7 +366,7 @@ function Panel:render(snapshot, view)
   if not self:is_open() then
     return
   end
-  local width = vim.api.nvim_win_get_width(self.win) - 1
+  local width = math.max(vim.api.nvim_win_get_width(self.win) - 1, 1)
   local b, rows = self:_build(snapshot, view or {}, width)
   self.rows = rows
   vim.bo[self.buf].modifiable = true
@@ -397,6 +429,7 @@ function Panel:compose(opts, on_send)
       return
     end
     finished = true
+    self.composer = nil
     local text = vim.trim(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"))
     vim.cmd("stopinsert")
     if vim.api.nvim_win_is_valid(win) then
@@ -418,11 +451,18 @@ function Panel:compose(opts, on_send)
   map("n", "<CR>", true)
   map("n", "q", false)
   map("n", "<Esc>", false)
+  -- close() cancels a draft in progress, e.g. on :Explain stop.
+  self.composer = {
+    cancel = function()
+      finish(false)
+    end,
+  }
   vim.api.nvim_create_autocmd("WinClosed", {
     buffer = buf,
     once = true,
     callback = function()
       finished = true
+      self.composer = nil
     end,
   })
   vim.cmd("startinsert")

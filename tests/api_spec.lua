@@ -122,4 +122,52 @@ cases["a long-poll answers when the human writes"] = function()
   h.eq("hello", vim.json.decode(response.body).structuredContent.messages[1].text)
 end
 
+
+cases["a dropped long-poll stops counting as a listener"] = function()
+  local path, dir = h.file(h.numbered(5))
+  local session = Session.new({ cwd = dir })
+  local handler = api.handler(session)
+  local post = function(name, args)
+    return json(request(handler, "POST", "/tools/" .. name, vim.json.encode(args)))
+  end
+  local tour_id = post("create_tour", { title = "T" }).structuredContent.tour_id
+  local step_id = post("add_step", {
+    tour_id = tour_id, path = path, start_line = 1, end_line = 2, title = "s", note = "n",
+  }).structuredContent.step_id
+  local hang_up
+  handler({
+    method = "POST",
+    path = "/tools/wait_for_human",
+    headers = {},
+    body = vim.json.encode({ after = 0, timeout_s = 5 }),
+    base_url = BASE,
+    on_disconnect = function(fn)
+      hang_up = fn
+    end,
+  }, function() end)
+  h.ok(hang_up, "the API forwards the disconnect hook")
+  hang_up()
+  local nudge
+  session:subscribe(function(event)
+    nudge = event.needs_nudge
+  end)
+  session:reply(step_id, "hello?")
+  h.eq(true, nudge)
+end
+
+cases["internal errors are logged with a traceback"] = function()
+  local broken = {
+    cwd = "/",
+    tools = function()
+      return {}
+    end,
+    call = function()
+      error("boom")
+    end,
+  }
+  local response = request(api.handler(broken), "POST", "/tools/anything", "{}")
+  h.eq(500, response.status)
+  h.contains(table.concat(_G.notifications, "\n"), "stack traceback")
+end
+
 return cases

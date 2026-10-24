@@ -136,4 +136,21 @@ cases["stop answers requests still waiting with 503"] = function()
   h.contains(result.stdout, "503")
 end
 
+
+cases["a client that leaves before the answer is reported"] = function()
+  local left = false
+  local server = echo_server({
+    handler = function(req)
+      req.on_disconnect(function()
+        left = true
+      end)
+    end,
+  })
+  vim.system({ "curl", "-s", "--max-time", "1", server.url }, { text = true }, function() end)
+  h.wait_for(function()
+    return left
+  end, 4000, "the handler hears about the disconnect")
+  server:stop()
+end
+
 return cases

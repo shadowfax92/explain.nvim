@@ -194,12 +194,16 @@ local function failure(message)
   return { status = "error", text = message }
 end
 
----@param opts { cwd?: string }
+---`live_range(step_id, revision)` is how the editor reports where a step's
+---code sits now (it follows the human's edits); it returns nil when it has no
+---position for that revision, and agents then read the stored range.
+---@param opts { cwd?: string, live_range?: fun(step_id: integer, revision: integer): integer?, integer? }
 function Session.new(opts)
   opts = opts or {}
   local cwd = vim.uv.fs_realpath(opts.cwd or vim.fn.getcwd()) or opts.cwd
   return setmetatable({
     cwd = cwd,
+    live_range = opts.live_range,
     tours = {},
     tour_by_id = {},
     step_by_id = {},
@@ -335,6 +339,9 @@ function Session:_add_step(args, _, done)
     resolved = false,
     unread = 0,
     messages = {},
+    -- Bumped whenever the agent moves the range, so positions the editor
+    -- tracked for an older revision stop counting.
+    revision = 1,
   }
   table.insert(tour.steps, index, step.id)
   self.step_by_id[step.id] = step
@@ -360,6 +367,9 @@ function Session:_update_step(args, _, done)
   local range_err = check_range("update_step", self:display_path(step.path), #lines, first, last)
   if range_err then
     return done(failure(range_err))
+  end
+  if args.start_line or args.end_line then
+    step.revision = step.revision + 1
   end
   step.start_line, step.end_line = first, last
   step.title = args.title and vim.trim(args.title) or step.title
@@ -391,13 +401,14 @@ function Session:_get_tour(args, _, done)
   local steps = {}
   for position, id in ipairs(tour.steps) do
     local step = self.step_by_id[id]
+    local first, last = self:_range(step)
     steps[#steps + 1] = {
       step_id = step.id,
       position = position,
       title = step.title,
       path = self:display_path(step.path),
-      start_line = step.start_line,
-      end_line = step.end_line,
+      start_line = first,
+      end_line = last,
       note = step.note,
       origin = step.origin,
       resolved = step.resolved,
@@ -465,7 +476,7 @@ function Session:_post(step, author, kind, body)
   return message
 end
 
-function Session:_wait_for_human(args, _, done)
+function Session:_wait_for_human(args, ctx, done)
   local pending = self:_human_messages_after(args.after)
   if #pending > 0 then
     return done(self:_messages_result(args.after))
@@ -481,6 +492,17 @@ function Session:_wait_for_human(args, _, done)
     done(result)
   end
   self.waiters[waiter] = true
+  -- An agent whose request dropped (curl timeout, Ctrl-C) is no longer
+  -- listening: forget the wait so the next human message nudges it instead.
+  if ctx.on_cancel then
+    ctx.on_cancel(function()
+      if self.waiters[waiter] then
+        self.waiters[waiter] = nil
+        waiter.timer:stop()
+        waiter.timer:close()
+      end
+    end)
+  end
   -- Timer callbacks run in libuv's fast context; hop to the main loop first.
   waiter.timer:start(
     (args.timeout_s or WAIT_DEFAULT_S) * 1000,
@@ -515,6 +537,18 @@ function Session:_agent_reply(args, _, done)
   return done(ok(("posted message %d on step %d"):format(message.id, step.id), { message_id = message.id }))
 end
 
+-- Where a step's code is now: the editor's live position for the current
+-- revision when it has one, else the last stored range.
+function Session:_range(step)
+  if self.live_range then
+    local first, last = self.live_range(step.id, step.revision)
+    if first then
+      return first, last
+    end
+  end
+  return step.start_line, step.end_line
+end
+
 -- Human messages with seq > after, oldest first, in the shape agents read.
 function Session:_human_messages_after(after)
   local out = {}
@@ -529,9 +563,8 @@ function Session:_human_messages_after(after)
           step_id = step.id,
           step_title = step.title,
           path = self:display_path(step.path),
-          start_line = step.start_line,
-          end_line = step.end_line,
         }
+        out[#out].start_line, out[#out].end_line = self:_range(step)
       end
     end
   end
@@ -601,6 +634,7 @@ function Session:ask(opts)
     resolved = false,
     unread = 0,
     messages = {},
+    revision = 1,
   }
   table.insert(tour.steps, index, step.id)
   self.step_by_id[step.id] = step
@@ -617,9 +651,10 @@ function Session:resolve(step_id)
 end
 
 ---Records a step's current lines after the human's edits moved the code.
-function Session:set_range(step_id, first, last)
+---Positions tracked for an older revision are ignored.
+function Session:set_range(step_id, first, last, revision)
   local step = self.step_by_id[step_id]
-  if step then
+  if step and (revision == nil or revision == step.revision) then
     step.start_line, step.end_line = first, last
   end
 end

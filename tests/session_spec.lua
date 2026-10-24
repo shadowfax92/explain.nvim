@@ -256,4 +256,66 @@ cases["set_range records where the code moved"] = function()
   h.eq({ 6, 8 }, { step.start_line, step.end_line })
 end
 
+
+cases["reads report the editor's live ranges until a revision"] = function()
+  local path, dir = h.file(h.numbered(20))
+  local live = {}
+  local session = Session.new({
+    cwd = dir,
+    live_range = function(step_id, revision)
+      local range = live[step_id]
+      if range and range.revision == revision then
+        return range[1], range[2]
+      end
+    end,
+  })
+  local tour_id, step_id = tour_with_step(session, path)
+  live[step_id] = { 6, 8, revision = session:snapshot().tours[1].steps[1].revision }
+  session:reply(step_id, "where?")
+  local message = call(session, "read_messages", {}).data.messages[1]
+  h.eq({ 6, 8 }, { message.start_line, message.end_line })
+  local step = call(session, "get_tour", { tour_id = tour_id }).data.steps[1]
+  h.eq({ 6, 8 }, { step.start_line, step.end_line })
+
+  call(session, "update_step", { step_id = step_id, start_line = 1, end_line = 2 })
+  step = call(session, "get_tour", { tour_id = tour_id }).data.steps[1]
+  h.eq({ 1, 2 }, { step.start_line, step.end_line }, "a revision outranks the editor's old position")
+end
+
+cases["a cancelled wait no longer counts as listening"] = function()
+  local path, dir = h.file(h.numbered(20))
+  local session = Session.new({ cwd = dir })
+  local _, step_id = tour_with_step(session, path)
+  local cancel, answered
+  session:call("wait_for_human", { after = 0, timeout_s = 5 }, {
+    on_cancel = function(fn)
+      cancel = fn
+    end,
+  }, function()
+    answered = true
+  end)
+  h.ok(cancel, "the wait registers a cancel hook")
+  cancel()
+  local nudge
+  session:subscribe(function(event)
+    if event.type == "message" then
+      nudge = event.needs_nudge
+    end
+  end)
+  session:reply(step_id, "anyone?")
+  h.eq(true, nudge)
+  h.eq(nil, answered, "a cancelled wait is never answered")
+end
+
+cases["set_range ignores positions from a stale revision"] = function()
+  local path, dir = h.file(h.numbered(20))
+  local session = Session.new({ cwd = dir })
+  local _, step_id = tour_with_step(session, path)
+  local old = session:snapshot().tours[1].steps[1].revision
+  call(session, "update_step", { step_id = step_id, start_line = 10, end_line = 12 })
+  session:set_range(step_id, 4, 6, old)
+  local step = session:snapshot().tours[1].steps[1]
+  h.eq({ 10, 12 }, { step.start_line, step.end_line })
+end
+
 return cases

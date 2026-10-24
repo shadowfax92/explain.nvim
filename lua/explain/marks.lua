@@ -20,13 +20,13 @@ local LABEL_NS = vim.api.nvim_create_namespace("explain.label")
 local SIGN_NS = vim.api.nvim_create_namespace("explain.sign")
 local instances = 0
 
----@param opts? { on_unload?: fun(step_id: integer, first: integer, last: integer) }
+---@param opts? { on_unload?: fun(step_id: integer, first: integer, last: integer, revision: integer) }
 function Marks.new(opts)
   highlight.setup()
   instances = instances + 1
   local self = setmetatable({
     on_unload = (opts or {}).on_unload,
-    anchors = {}, -- step_id -> { buf, id }
+    anchors = {}, -- step_id -> { buf, id, revision }
     attached = {}, -- buf -> true while we redraw signs on its edits
     group = vim.api.nvim_create_augroup("explain.marks." .. instances, { clear = true }),
   }, Marks)
@@ -127,10 +127,7 @@ function Marks:render(snapshot, current)
   self.last = { snapshot = snapshot, current = current }
   local buffers = loaded_buffers()
   local live = {}
-  for buf in pairs(vim.iter(buffers):fold({}, function(acc, _, b)
-    acc[b] = true
-    return acc
-  end)) do
+  for _, buf in pairs(buffers) do
     vim.api.nvim_buf_clear_namespace(buf, LABEL_NS, 0, -1)
     vim.api.nvim_buf_clear_namespace(buf, SIGN_NS, 0, -1)
   end
@@ -153,8 +150,10 @@ end
 
 function Marks:_draw(buf, step, position, tour, current)
   local style = decoration(step, position, tour, current)
+  -- Keep the tracked position unless the agent revised the range since.
   local anchor_buf, row, end_row = self:_anchor_position(step.id)
-  if anchor_buf ~= buf then
+  local anchor = self.anchors[step.id]
+  if anchor_buf ~= buf or anchor.revision ~= step.revision then
     local count = vim.api.nvim_buf_line_count(buf)
     row = math.min(step.start_line, count) - 1
     end_row = math.min(step.end_line, count) - 1
@@ -176,7 +175,7 @@ function Marks:_draw(buf, step, position, tour, current)
     invalidate = true,
     undo_restore = true,
   })
-  self.anchors[step.id] = { buf = buf, id = id }
+  self.anchors[step.id] = { buf = buf, id = id, revision = step.revision }
   local _, first, last = self:_anchor_position(step.id)
   for line = first, last do
     vim.api.nvim_buf_set_extmark(buf, SIGN_NS, line, 0, {
@@ -223,23 +222,39 @@ function Marks:_attach(buf)
 end
 
 ---The step's current lines (1-based, inclusive), following the human's edits.
----Nil when the step's file is not loaded.
-function Marks:live_range(step_id)
+---Nil when the step's file is not loaded, or when `revision` is given and the
+---anchor was placed for an older one.
+function Marks:live_range(step_id, revision)
   local _, row, end_row = self:_anchor_position(step_id)
-  if not row then
+  if not row or (revision and self.anchors[step_id].revision ~= revision) then
     return nil
   end
   return row + 1, end_row + 1
 end
 
+-- Reports final positions before a buffer goes away, and keeps the cached
+-- snapshot in step so a reload re-places marks where the edits left them.
 function Marks:_forget_buffer(buf)
   for step_id, anchor in pairs(self.anchors) do
     if anchor.buf == buf then
       local first, last = self:live_range(step_id)
-      if first and self.on_unload then
-        self.on_unload(step_id, first, last)
+      if first then
+        if self.on_unload then
+          self.on_unload(step_id, first, last, anchor.revision)
+        end
+        self:_remember(step_id, first, last, anchor.revision)
       end
       self.anchors[step_id] = nil
+    end
+  end
+end
+
+function Marks:_remember(step_id, first, last, revision)
+  for _, tour in ipairs(self.last and self.last.snapshot.tours or {}) do
+    for _, step in ipairs(tour.steps) do
+      if step.id == step_id and step.revision == revision then
+        step.start_line, step.end_line = first, last
+      end
     end
   end
 end

@@ -203,4 +203,40 @@ cases["clear removes every decoration"] = function()
   h.eq("line 3", screen_line(row_of(3)):gsub("^%s+", ""))
 end
 
+
+cases["a revised range moves the highlight"] = function()
+  setup_screen()
+  local path, dir = h.file(h.numbered(20))
+  open(path)
+  local session, first, _, call = session_with_steps(path, dir)
+  local marks = Marks.new()
+  marks:render(session:snapshot(), first)
+  h.eq("ok", call("update_step", { step_id = first, start_line = 8, end_line = 10 }).status)
+  marks:render(session:snapshot(), first)
+  h.eq({ 8, 10 }, { marks:live_range(first) })
+  marks:clear()
+end
+
+cases["reopening a file restores the range where edits left it"] = function()
+  setup_screen()
+  local path, dir = h.file(h.numbered(20))
+  open(path)
+  local session, first = session_with_steps(path, dir)
+  local marks = Marks.new({
+    on_unload = function(step_id, first_line, last_line, revision)
+      session:set_range(step_id, first_line, last_line, revision)
+    end,
+  })
+  marks:render(session:snapshot(), first)
+  vim.api.nvim_buf_set_lines(0, 0, 0, false, { "new 1", "new 2" })
+  vim.cmd("silent write")
+  vim.cmd("bwipeout")
+  open(path)
+  h.wait_for(function()
+    return marks:live_range(first) ~= nil
+  end, 1000)
+  h.eq({ 5, 7 }, { marks:live_range(first) })
+  marks:clear()
+end
+
 return cases

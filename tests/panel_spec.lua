@@ -158,4 +158,72 @@ cases["the composer sends trimmed text and cancels cleanly"] = function()
   panel:close()
 end
 
+
+cases["a very narrow panel still renders"] = function()
+  local session, first, _, tour_id = fixture()
+  local panel = Panel.new({ display_path = function(p)
+    return session:display_path(p)
+  end })
+  panel:open()
+  vim.api.nvim_win_set_width(panel.win, 1)
+  panel:render(session:snapshot(), { tour_id = tour_id, step_id = first })
+  h.ok(#vim.api.nvim_buf_get_lines(panel.buf, 0, -1, false) > 0)
+  panel:close()
+end
+
+cases["wide characters wrap by display width"] = function()
+  vim.cmd("silent! only")
+  local path, dir = h.file(h.numbered(5))
+  local session = Session.new({ cwd = dir })
+  local tour_id, step_id
+  session:call("create_tour", { title = "漢字のツアー" }, {}, function(r)
+    tour_id = r.data.tour_id
+  end)
+  session:call("add_step", {
+    tour_id = tour_id, path = path, start_line = 1, end_line = 2, title = "幅", note = string.rep("漢字", 80),
+  }, {}, function(r)
+    step_id = r.data.step_id
+  end)
+  local panel = Panel.new({})
+  panel:open()
+  panel:render(session:snapshot(), { tour_id = tour_id, step_id = step_id })
+  local width = vim.api.nvim_win_get_width(panel.win)
+  local wrapped = 0
+  for _, line in ipairs(vim.api.nvim_buf_get_lines(panel.buf, 0, -1, false)) do
+    -- Note lines carry a 3-cell author bar as inline virtual text.
+    local bar = line:find("漢字", 1, true) and 3 or 0
+    wrapped = wrapped + (bar > 0 and 1 or 0)
+    h.ok(vim.fn.strdisplaywidth(line) + bar <= width, "line fits: " .. line)
+  end
+  h.ok(wrapped > 1, "the note wrapped onto several lines")
+  panel:close()
+end
+
+cases["closing the panel cancels an open composer"] = function()
+  local panel = Panel.new({})
+  panel:open()
+  panel:render({ tours = {}, seq = 0 }, {})
+  local sent = {}
+  panel:compose({ title = "reply" }, function(text)
+    sent[#sent + 1] = text
+  end)
+  local composer = vim.api.nvim_get_current_win()
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "draft" })
+  vim.cmd("stopinsert")
+  panel:close()
+  h.eq(false, vim.api.nvim_win_is_valid(composer))
+  h.eq({}, sent)
+end
+
+cases["closing the panel when it is the only window keeps Neovim open"] = function()
+  local panel = Panel.new({})
+  panel:open()
+  vim.api.nvim_set_current_win(panel.win)
+  vim.cmd("only")
+  panel:close()
+  h.eq(false, panel:is_open())
+  h.eq(1, #vim.api.nvim_list_wins())
+  h.ok(vim.bo[vim.api.nvim_get_current_buf()].filetype ~= "explain")
+end
+
 return cases
