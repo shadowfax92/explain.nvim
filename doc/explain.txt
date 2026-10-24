@@ -1,0 +1,107 @@
+*explain.txt*  Agent-guided code tours in Neovim
+
+==============================================================================
+CONTENTS                                                   *explain-contents*
+
+  1. Introduction ........................................ |explain-intro|
+  2. Commands ............................................ |explain-commands|
+  3. Keys ................................................ |explain-keys|
+  4. Setup ............................................... |explain-setup|
+  5. Agent API ........................................... |explain-api|
+  6. Highlights .......................................... |explain-highlights|
+
+==============================================================================
+1. INTRODUCTION                                               *explain-intro*
+
+explain.nvim lets an agent walk you through code. `:Explain start` serves a
+local URL and copies a one-line prompt containing it. Paste that into any
+agent with a shell. The agent reads the guide at the URL and builds a tour:
+ordered steps, each a highlighted line range in a real file with a note. You
+read the steps in their files, reply under a step, or ask about a selection;
+the agent answers in the step's thread.
+
+Nothing runs until `:Explain start`. `:Explain stop` or quitting Neovim drops
+every tour. Requires Neovim 0.10+.
+
+==============================================================================
+2. COMMANDS                                                *explain-commands*
+
+:Explain                                                           *:Explain*
+    Start, or toggle the panel when already running.
+:Explain start      Start serving; when running, copy the prompt again.
+:Explain stop       Stop serving and clear every tour, band and panel.
+:Explain url        Copy the prompt with the URL again.
+:Explain panel      Toggle the panel.
+:Explain tours      Pick a tour.
+:Explain next       Go to the next step.
+:Explain prev       Go to the previous step.
+
+==============================================================================
+3. KEYS                                                        *explain-keys*
+
+Global keys exist only while explain runs (see |explain-setup| to change):
+
+  ]x  [x          next / previous step of the current tour
+  <leader>kr      reply on the current step
+  <leader>ka      (visual) ask about the selected lines
+  <leader>kx      resolve / reopen the current step
+  <leader>kp      toggle the panel
+  <leader>kt      pick a tour
+
+In the panel:
+
+  <CR>            jump to the step under the cursor
+  <Tab> <S-Tab>   next / previous step, focus stays in the panel
+  r  x            reply, resolve
+  gf              open the `path:line` reference under the cursor
+  q               close the panel
+
+In the composer: <C-s> sends (insert or normal mode), <CR> sends in normal
+mode, q or <Esc> in normal mode cancels.
+
+==============================================================================
+4. SETUP                                                      *explain-setup*
+
+>lua
+  require("explain").setup({
+    keymaps = {
+      next = "]x", prev = "[x", reply = "<leader>kr", ask = "<leader>ka",
+      resolve = "<leader>kx", panel = "<leader>kp", tours = "<leader>kt",
+    },
+    nudge = true,
+  })
+<
+Set a key to false to skip it. `nudge = false` stops explain from typing a
+wake-up line into the agent's herdr pane when you write.
+
+                                                       *explain.statusline()*
+require("explain").statusline() returns `◆ explain :PORT · N new` while
+running and an empty string otherwise.
+
+==============================================================================
+5. AGENT API                                                    *explain-api*
+
+All routes sit under the URL `:Explain url` copies, on 127.0.0.1 only.
+
+  GET  <url>              plain-text guide with curl examples
+  GET  <url>tools         MCP tools/list result
+  POST <url>tools/NAME    JSON arguments in, MCP CallToolResult out
+
+Tools: create_tour, add_step, update_step, reply, read_messages,
+wait_for_human, get_tour. Agents send `X-Herdr-Pane: $HERDR_PANE_ID` so your
+replies can wake them. Requests with a foreign Origin header are refused.
+
+==============================================================================
+6. HIGHLIGHTS                                            *explain-highlights*
+
+All groups are defined with `default`, so colorschemes may override them.
+
+  ExplainBand ExplainBandDim          current / other agent steps
+  ExplainBandHuman ExplainBandHumanDim  steps you asked about
+  ExplainSign ExplainSignDim ExplainSignHuman ExplainSignHumanDim
+  ExplainLabel ExplainLabelDim ExplainLabelHuman ExplainBadge
+  ExplainAgent ExplainHuman ExplainAgentBar ExplainHumanBar
+  ExplainTitle ExplainMuted ExplainCurrent ExplainCurrentNumber
+  ExplainResolved ExplainLink ExplainSurface
+
+ vim:tw=78:ts=8:ft=help:norl:
