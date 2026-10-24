@@ -2,10 +2,6 @@ local h = dofile("tests/helpers.lua")
 local Session = require("explain.session")
 local Panel = require("explain.panel")
 
--- A realistic editor width (the panel takes ~35%). Set once: resizing the
--- headless grid between redraws can crash Neovim 0.12.
-vim.o.columns = 160
-
 local function fixture()
   vim.cmd("silent! only")
   local path, dir = h.file(h.numbered(40), "init.lua")

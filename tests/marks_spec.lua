@@ -14,14 +14,32 @@ local function screen_line(row)
   return (table.concat(chars):gsub("%s+$", ""))
 end
 
--- Resize once: resizing the headless grid between redraws crashes Neovim 0.12
--- (grid_clear_line in update_screen).
-vim.o.columns, vim.o.lines = 100, 30
-
 local function setup_screen()
-  vim.cmd("silent! %bwipeout!")
+  vim.cmd("silent! only | silent! %bwipeout!")
   vim.o.signcolumn = "yes"
   vim.o.number = false
+end
+
+-- Opens a file scrolled to the top. A reused window can keep an earlier
+-- view, so rows are always looked up with row_of() rather than assumed.
+local function open(path)
+  vim.cmd.edit(path)
+  vim.fn.winrestview({ topline = 1, lnum = 1, col = 0 })
+end
+
+-- Repaints every row. A plain redraw! skips rows Neovim believes are still
+-- valid, and headless grids can hold stale blanks from earlier specs.
+local function repaint()
+  vim.api.nvim__redraw({ win = 0, valid = false, flush = true })
+  vim.cmd("redraw!")
+end
+
+local function row_of(lnum)
+  return vim.fn.screenpos(0, lnum, 1).row
+end
+
+local function sign_at(lnum)
+  return vim.fn.nr2char(vim.fn.screenchar(row_of(lnum), 1))
 end
 
 local function session_with_steps(path, dir)
@@ -49,43 +67,46 @@ local cases = {}
 cases["the current step gets a band and a sign on every line, others a dim one"] = function()
   setup_screen()
   local path, dir = h.file(h.numbered(20))
-  vim.cmd.edit(path)
+  open(path)
   local session, first = session_with_steps(path, dir)
   local marks = Marks.new()
   marks:render(session:snapshot(), first)
-  vim.cmd("redraw!")
-  for row = 3, 5 do
-    h.eq("▌", vim.fn.nr2char(vim.fn.screenchar(row, 1)), "sign on line " .. row)
+  repaint()
+  for lnum = 3, 5 do
+    h.eq("▌", sign_at(lnum), "sign on line " .. lnum)
   end
-  h.eq(" ", vim.fn.nr2char(vim.fn.screenchar(2, 1)))
-  h.eq(" ", vim.fn.nr2char(vim.fn.screenchar(6, 1)))
-  local band = vim.fn.screenattr(4, 60)
-  h.ok(band ~= vim.fn.screenattr(2, 60), "band reaches past the text")
-  h.eq(band, vim.fn.screenattr(3, 60))
-  h.ok(vim.fn.screenattr(10, 60) ~= band, "other steps are dimmer")
-  h.ok(vim.fn.screenattr(10, 60) ~= vim.fn.screenattr(9, 60), "but still banded")
-  h.contains(screen_line(3), "◆ claude: Every review walks through here.")
-  h.contains(screen_line(10), "◆ 2  Wrappers")
+  h.eq(" ", sign_at(2))
+  h.eq(" ", sign_at(6))
+  local attr = function(lnum)
+    return vim.fn.screenattr(row_of(lnum), 60)
+  end
+  local band = attr(4)
+  h.ok(band ~= attr(2), "band reaches past the text")
+  h.eq(band, attr(3))
+  h.ok(attr(10) ~= band, "other steps are dimmer")
+  h.ok(attr(10) ~= attr(9), "but still banded")
+  h.contains(screen_line(row_of(3)), "◆ claude: Every review walks through here.")
+  h.contains(screen_line(row_of(10)), "◆ 2  Wrappers")
   marks:clear()
 end
 
 cases["the current step's label shows unread agent replies"] = function()
   setup_screen()
   local path, dir = h.file(h.numbered(20))
-  vim.cmd.edit(path)
+  open(path)
   local session, first, _, call = session_with_steps(path, dir)
   call("reply", { step_id = first, text = "answer" })
   local marks = Marks.new()
   marks:render(session:snapshot(), first)
-  vim.cmd("redraw!")
-  h.contains(screen_line(3), "1 new")
+  repaint()
+  h.contains(screen_line(row_of(3)), "1 new")
   marks:clear()
 end
 
 cases["live ranges follow edits"] = function()
   setup_screen()
   local path, dir = h.file(h.numbered(20))
-  vim.cmd.edit(path)
+  open(path)
   local session, first = session_with_steps(path, dir)
   local marks = Marks.new()
   marks:render(session:snapshot(), first)
@@ -103,7 +124,7 @@ cases["a file opened later gets its marks"] = function()
   local marks = Marks.new()
   marks:render(session:snapshot(), first)
   h.eq(nil, marks:live_range(first), "not loaded yet")
-  vim.cmd.edit(path)
+  open(path)
   h.wait_for(function()
     return marks:live_range(first) ~= nil
   end, 1000)
@@ -114,7 +135,7 @@ end
 cases["unloading a buffer reports where each range ended up"] = function()
   setup_screen()
   local path, dir = h.file(h.numbered(20))
-  vim.cmd.edit(path)
+  open(path)
   local session, first = session_with_steps(path, dir)
   local moved = {}
   local marks = Marks.new({
@@ -132,14 +153,14 @@ end
 cases["clear removes every decoration"] = function()
   setup_screen()
   local path, dir = h.file(h.numbered(20))
-  vim.cmd.edit(path)
+  open(path)
   local session, first = session_with_steps(path, dir)
   local marks = Marks.new()
   marks:render(session:snapshot(), first)
   marks:clear()
-  vim.cmd("redraw!")
-  h.eq(" ", vim.fn.nr2char(vim.fn.screenchar(3, 1)))
-  h.eq("line 3", screen_line(3):gsub("^%s+", ""))
+  repaint()
+  h.eq(" ", sign_at(3))
+  h.eq("line 3", screen_line(row_of(3)):gsub("^%s+", ""))
 end
 
 return cases
