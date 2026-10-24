@@ -1,9 +1,11 @@
 ---Marks draws tour steps inside real code buffers: a highlighter band with a
 ---sign bar on every line of each step, and an end-of-line label on its first
----line. One extmark per step carries the band and sign; Neovim applies a range
----mark's line decorations to every line from start to end_row and moves the
----mark with edits, so it doubles as the step's live anchor. Labels are a
----second, disposable extmark redrawn on every render.
+---line. One range extmark per step carries the band; Neovim applies its line
+---highlight to every line through end_row and moves it with edits, so it
+---doubles as the step's live anchor. Signs are one extmark per line instead,
+---because statuscolumn plugins (snacks, statuscol) only find signs on the line
+---a mark starts on. Signs and labels are disposable: they are redrawn from the
+---anchors on every render and whenever an annotated buffer changes.
 ---
 ---Steps whose files are not loaded wait until the buffer appears; when a
 ---buffer unloads, the anchor's final range is reported back so the session can
@@ -15,6 +17,7 @@ Marks.__index = Marks
 
 local BAND_NS = vim.api.nvim_create_namespace("explain.band")
 local LABEL_NS = vim.api.nvim_create_namespace("explain.label")
+local SIGN_NS = vim.api.nvim_create_namespace("explain.sign")
 local instances = 0
 
 ---@param opts? { on_unload?: fun(step_id: integer, first: integer, last: integer) }
@@ -24,6 +27,7 @@ function Marks.new(opts)
   local self = setmetatable({
     on_unload = (opts or {}).on_unload,
     anchors = {}, -- step_id -> { buf, id }
+    attached = {}, -- buf -> true while we redraw signs on its edits
     group = vim.api.nvim_create_augroup("explain.marks." .. instances, { clear = true }),
   }, Marks)
   vim.api.nvim_create_autocmd({ "BufReadPost", "BufWinEnter" }, {
@@ -128,6 +132,7 @@ function Marks:render(snapshot, current)
     return acc
   end)) do
     vim.api.nvim_buf_clear_namespace(buf, LABEL_NS, 0, -1)
+    vim.api.nvim_buf_clear_namespace(buf, SIGN_NS, 0, -1)
   end
   for _, tour in ipairs(snapshot.tours) do
     for position, step in ipairs(tour.steps) do
@@ -165,18 +170,55 @@ function Marks:_draw(buf, step, position, tour, current)
     end_col = #last_line,
     end_right_gravity = true,
     line_hl_group = style.band,
-    sign_text = "▌",
-    sign_hl_group = style.sign,
-    priority = current and 60 or 50,
+    -- Below the signs: statuscolumn plugins treat line highlights as signs
+    -- and show only the highest-priority one per line.
+    priority = current and 11 or 10,
     invalidate = true,
     undo_restore = true,
   })
   self.anchors[step.id] = { buf = buf, id = id }
+  local _, first, last = self:_anchor_position(step.id)
+  for line = first, last do
+    vim.api.nvim_buf_set_extmark(buf, SIGN_NS, line, 0, {
+      sign_text = "▌",
+      sign_hl_group = style.sign,
+      priority = current and 60 or 50,
+    })
+  end
+  self:_attach(buf)
   vim.api.nvim_buf_set_extmark(buf, LABEL_NS, row, 0, {
     virt_text = style.label,
     virt_text_pos = "eol",
     hl_mode = "combine",
     priority = current and 60 or 50,
+  })
+end
+
+-- Redraws signs and labels after edits so lines added inside a range get a
+-- sign. on_lines runs under textlock, so the redraw is deferred.
+function Marks:_attach(buf)
+  if self.attached[buf] then
+    return
+  end
+  self.attached[buf] = true
+  vim.api.nvim_buf_attach(buf, false, {
+    on_lines = function()
+      if not self.attached[buf] then
+        return true -- detach after clear()
+      end
+      if not self.refresh_pending then
+        self.refresh_pending = true
+        vim.schedule(function()
+          self.refresh_pending = false
+          if self.last then
+            self:render(self.last.snapshot, self.last.current)
+          end
+        end)
+      end
+    end,
+    on_detach = function()
+      self.attached[buf] = nil
+    end,
   })
 end
 
@@ -208,9 +250,10 @@ function Marks:clear()
     if vim.api.nvim_buf_is_valid(buf) then
       vim.api.nvim_buf_clear_namespace(buf, BAND_NS, 0, -1)
       vim.api.nvim_buf_clear_namespace(buf, LABEL_NS, 0, -1)
+      vim.api.nvim_buf_clear_namespace(buf, SIGN_NS, 0, -1)
     end
   end
-  self.anchors, self.last = {}, nil
+  self.anchors, self.last, self.attached = {}, nil, {}
   pcall(vim.api.nvim_del_augroup_by_id, self.group)
 end
 

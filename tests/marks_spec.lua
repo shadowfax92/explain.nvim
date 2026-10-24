@@ -150,6 +150,46 @@ cases["unloading a buffer reports where each range ended up"] = function()
   marks:clear()
 end
 
+-- Statuscolumn plugins (snacks, statuscol) ask for sign extmarks that start on
+-- each line, so a single multi-line mark only shows on its first line there.
+-- (Line highlights also count as "sign" marks, so keep only those with text.)
+local function signs_on(lnum)
+  local marks = vim.api.nvim_buf_get_extmarks(0, -1, { lnum - 1, 0 }, { lnum - 1, -1 }, { type = "sign", details = true })
+  return vim.iter(marks)
+    :map(function(mark)
+      return mark[4].sign_text
+    end)
+    :totable()
+end
+
+cases["every annotated line carries its own sign for statuscolumn plugins"] = function()
+  setup_screen()
+  local path, dir = h.file(h.numbered(20))
+  open(path)
+  local session, first = session_with_steps(path, dir)
+  local marks = Marks.new()
+  marks:render(session:snapshot(), first)
+  for lnum = 3, 5 do
+    h.eq({ "▌ " }, signs_on(lnum), "one sign on line " .. lnum)
+  end
+  h.eq({}, signs_on(6))
+  -- snacks shows the highest-priority sign-type mark per line; the band's line
+  -- highlight is one too, so it must rank below the sign or the line looks bare.
+  for lnum = 3, 5 do
+    local marks = vim.api.nvim_buf_get_extmarks(0, -1, { lnum - 1, 0 }, { lnum - 1, -1 }, { type = "sign", details = true })
+    table.sort(marks, function(a, b)
+      return (a[4].priority or 0) > (b[4].priority or 0)
+    end)
+    h.eq("▌ ", marks[1][4].sign_text, "top sign on line " .. lnum)
+  end
+  vim.api.nvim_buf_set_lines(0, 4, 4, false, { "inserted inside" })
+  h.wait_for(function()
+    return #signs_on(5) == 1 and #signs_on(6) == 1
+  end, 1000, "a line added inside the range gets a sign")
+  h.eq({}, signs_on(7))
+  marks:clear()
+end
+
 cases["clear removes every decoration"] = function()
   setup_screen()
   local path, dir = h.file(h.numbered(20))
