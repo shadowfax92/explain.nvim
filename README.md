@@ -50,6 +50,7 @@ require("explain").setup({
     resolve = "<leader>kx",
     panel = "<leader>kp",
     tours = "<leader>kt",
+    highlights = "<leader>kh",
   },
   -- Wake an idle agent through its herdr pane when you write.
   nudge = true,
@@ -71,6 +72,8 @@ title, its steps, and the current step's thread. Moving to a step opens its
 file in your code window. The current step's lines get an amber band with a
 yellow sign bar; other steps in open files get a dimmer band and a label at the
 end of their first line. Questions you asked are blue. Bands follow your edits.
+`<leader>kh` hides the band fill when it gets in the way of reading; the
+sign bars and labels stay so you still see where each step is.
 
 | Key | Where | Action |
 | --- | --- | --- |
@@ -80,6 +83,7 @@ end of their first line. Questions you asked are blue. Bands follow your edits.
 | `<leader>kx` | normal | resolve / reopen the current step |
 | `<leader>kp` | normal | toggle the panel |
 | `<leader>kt` | normal | switch tour |
+| `<leader>kh` | normal | hide / show the band fill |
 | `<CR>` | panel | jump to the step under the cursor |
 | `<Tab>` / `<S-Tab>` | panel | next / previous step, focus stays in the panel |
 | `r`, `x`, `gf`, `q` | panel | reply, resolve, open a `path:line` reference, close |

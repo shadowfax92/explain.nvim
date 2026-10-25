@@ -32,6 +32,7 @@ local defaults = {
     resolve = "<leader>kx",
     panel = "<leader>kp",
     tours = "<leader>kt",
+    highlights = "<leader>kh",
   },
   -- Wake an idle agent through its herdr pane when you write. `false` disables;
   -- a table is passed to the nudge (delay_ms, run) and exists for tests.
@@ -81,7 +82,7 @@ local function render()
     return
   end
   local snapshot = state.session:snapshot()
-  state.marks:render(snapshot, state.view.step_id)
+  state.marks:render(snapshot, state.view.step_id, { bands = state.bands })
   state.panel:render(snapshot, { tour_id = state.view.tour_id, step_id = state.view.step_id, url = state.server.url })
   -- You are looking at the current step's thread, so its replies are read.
   if state.view.step_id and state.panel:is_open() then
@@ -289,6 +290,16 @@ function M.toggle_panel()
   schedule_render()
 end
 
+---Hides or shows the highlighter fill. Gutter bars and labels stay, so you
+---still see where each step is while reading the code plainly.
+function M.toggle_highlights()
+  if not state then
+    return notify("explain is not running", vim.log.levels.WARN)
+  end
+  state.bands = not state.bands
+  schedule_render()
+end
+
 function M.pick_tour()
   if not state then
     return notify("explain is not running", vim.log.levels.WARN)
@@ -340,6 +351,7 @@ local function set_keymaps()
   map("n", keys.resolve, M.resolve, "resolve step")
   map("n", keys.panel, M.toggle_panel, "toggle panel")
   map("n", keys.tours, M.pick_tour, "pick tour")
+  map("n", keys.highlights, M.toggle_highlights, "toggle highlights")
 end
 
 ---Starts serving (or re-copies the line when already running) and returns the URL.
@@ -372,6 +384,7 @@ function M.start()
     session = session,
     server = server,
     view = {},
+    bands = true,
     keymaps = {},
     nudge = nudge_opts and Nudge.new(type(nudge_opts) == "table" and nudge_opts or nil) or nil,
     group = vim.api.nvim_create_augroup("explain", { clear = true }),
@@ -465,7 +478,7 @@ function M.statusline()
   return text
 end
 
----Entry point for `:Explain {start|stop|url|panel|tours|next|prev}`.
+---Entry point for `:Explain {start|stop|url|panel|tours|highlights|next|prev}`.
 function M.command(args)
   local sub = args[1] or (state and "panel" or "start")
   local actions = {
@@ -479,6 +492,7 @@ function M.command(args)
     end,
     panel = M.toggle_panel,
     tours = M.pick_tour,
+    highlights = M.toggle_highlights,
     next = M.next,
     prev = M.prev,
   }
@@ -489,6 +503,6 @@ function M.command(args)
   action()
 end
 
-M.subcommands = { "start", "stop", "url", "panel", "tours", "next", "prev" }
+M.subcommands = { "start", "stop", "url", "panel", "tours", "highlights", "next", "prev" }
 
 return M

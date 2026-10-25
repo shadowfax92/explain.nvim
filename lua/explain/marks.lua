@@ -5,7 +5,9 @@
 ---doubles as the step's live anchor. Signs are one extmark per line instead,
 ---because statuscolumn plugins (snacks, statuscol) only find signs on the line
 ---a mark starts on. Signs and labels are disposable: they are redrawn from the
----anchors on every render and whenever an annotated buffer changes.
+---anchors on every render and whenever an annotated buffer changes. Hiding
+---bands only drops the line highlight; the anchors stay, so ranges keep
+---following edits while the code reads unhighlighted.
 ---
 ---Steps whose files are not loaded wait until the buffer appears; when a
 ---buffer unloads, the anchor's final range is reported back so the session can
@@ -35,9 +37,7 @@ function Marks.new(opts)
     callback = function(args)
       if self.last and self:_has_steps(vim.api.nvim_buf_get_name(args.buf)) then
         vim.schedule(function()
-          if self.last then
-            self:render(self.last.snapshot, self.last.current)
-          end
+          self:_rerender()
         end)
       end
     end,
@@ -122,9 +122,12 @@ function Marks:_anchor_position(step_id)
 end
 
 ---Draws every step of every tour into the buffers that are loaded. Idempotent;
----call it after any change. `current` is the step the human is on.
-function Marks:render(snapshot, current)
-  self.last = { snapshot = snapshot, current = current }
+---call it after any change. `current` is the step the human is on;
+---`opts.bands = false` leaves out the highlighter fill.
+---@param opts? { bands?: boolean }
+function Marks:render(snapshot, current, opts)
+  self.last = { snapshot = snapshot, current = current, opts = opts }
+  local bands = not opts or opts.bands ~= false
   local buffers = loaded_buffers()
   local live = {}
   for _, buf in pairs(buffers) do
@@ -136,7 +139,7 @@ function Marks:render(snapshot, current)
       local buf = buffers[step.path]
       if buf then
         live[step.id] = true
-        self:_draw(buf, step, position, tour, step.id == current)
+        self:_draw(buf, step, position, tour, step.id == current, bands)
       end
     end
   end
@@ -148,7 +151,14 @@ function Marks:render(snapshot, current)
   end
 end
 
-function Marks:_draw(buf, step, position, tour, current)
+-- Redraws from the last render, for changes that happen outside the controller.
+function Marks:_rerender()
+  if self.last then
+    self:render(self.last.snapshot, self.last.current, self.last.opts)
+  end
+end
+
+function Marks:_draw(buf, step, position, tour, current, bands)
   local style = decoration(step, position, tour, current)
   -- Keep the tracked position unless the agent revised the range since.
   local anchor_buf, row, end_row = self:_anchor_position(step.id)
@@ -168,7 +178,7 @@ function Marks:_draw(buf, step, position, tour, current)
     end_row = end_row,
     end_col = #last_line,
     end_right_gravity = true,
-    line_hl_group = style.band,
+    line_hl_group = bands and style.band or nil,
     -- Below the signs: statuscolumn plugins treat line highlights as signs
     -- and show only the highest-priority one per line.
     priority = current and 11 or 10,
@@ -209,9 +219,7 @@ function Marks:_attach(buf)
         self.refresh_pending = true
         vim.schedule(function()
           self.refresh_pending = false
-          if self.last then
-            self:render(self.last.snapshot, self.last.current)
-          end
+          self:_rerender()
         end)
       end
     end,

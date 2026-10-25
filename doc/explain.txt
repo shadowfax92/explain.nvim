@@ -33,6 +33,7 @@ every tour. Requires Neovim 0.10+.
 :Explain url        Copy the prompt with the URL again.
 :Explain panel      Toggle the panel.
 :Explain tours      Pick a tour.
+:Explain highlights Hide or show the band fill; bars and labels stay.
 :Explain next       Go to the next step.
 :Explain prev       Go to the previous step.
 
@@ -47,6 +48,7 @@ Global keys exist only while explain runs (see |explain-setup| to change):
   <leader>kx      resolve / reopen the current step
   <leader>kp      toggle the panel
   <leader>kt      pick a tour
+  <leader>kh      hide / show the band fill (bars and labels stay)
 
 In the panel:
 
@@ -67,6 +69,7 @@ mode, q or <Esc> in normal mode cancels.
     keymaps = {
       next = "]x", prev = "[x", reply = "<leader>kr", ask = "<leader>ka",
       resolve = "<leader>kx", panel = "<leader>kp", tours = "<leader>kt",
+      highlights = "<leader>kh",
     },
     nudge = true,
   })

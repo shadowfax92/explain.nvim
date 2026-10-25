@@ -90,6 +90,32 @@ cases["the current step gets a band and a sign on every line, others a dim one"]
   marks:clear()
 end
 
+cases["bands can be hidden while signs, labels and anchors stay"] = function()
+  setup_screen()
+  local path, dir = h.file(h.numbered(20))
+  open(path)
+  local session, first = session_with_steps(path, dir)
+  local marks = Marks.new()
+  marks:render(session:snapshot(), first, { bands = false })
+  repaint()
+  local attr = function(lnum)
+    return vim.fn.screenattr(row_of(lnum), 60)
+  end
+  h.eq(attr(2), attr(4), "no fill past the text")
+  h.eq(attr(9), attr(10), "no fill on other steps either")
+  h.eq("▌", sign_at(4))
+  h.contains(screen_line(row_of(3)), "◆ claude: Every review walks through here.")
+  vim.api.nvim_buf_set_lines(0, 0, 0, false, { "new 1" })
+  h.eq({ 4, 6 }, { marks:live_range(first) }, "the anchor still follows edits")
+  vim.wait(50) -- the edit schedules a redraw, which must keep bands hidden
+  repaint()
+  h.eq(attr(3), attr(5))
+  marks:render(session:snapshot(), first)
+  repaint()
+  h.ok(attr(5) ~= attr(3), "bands come back")
+  marks:clear()
+end
+
 cases["the current step's label shows unread agent replies"] = function()
   setup_screen()
   local path, dir = h.file(h.numbered(20))

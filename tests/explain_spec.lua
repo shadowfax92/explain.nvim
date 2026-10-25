@@ -147,6 +147,39 @@ cases["the command starts, reports and stops"] = function()
 end
 
 
+cases["highlights toggle off and on without stopping"] = function()
+  fresh()
+  explain.setup({ nudge = false })
+  local path, dir = h.file(h.numbered(40), "init.lua")
+  vim.cmd.cd(dir)
+  local url = explain.start()
+  local tour_id = post(url, "create_tour", { title = "T" }).structuredContent.tour_id
+  post(url, "add_step", { tour_id = tour_id, path = "init.lua", start_line = 10, end_line = 12, title = "s", note = "n" })
+  explain.next()
+  h.eq(path, vim.api.nvim_buf_get_name(0))
+  local band_ns = vim.api.nvim_create_namespace("explain.band")
+  local function fills()
+    local count = 0
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(0, band_ns, 0, -1, { details = true })) do
+      count = count + (mark[4].line_hl_group and 1 or 0)
+    end
+    return count
+  end
+  h.eq(1, fills())
+  h.ok(vim.fn.maparg("<leader>kh", "n") ~= "", "toggle is mapped")
+  vim.cmd("Explain highlights")
+  vim.wait(50)
+  h.eq(0, fills(), "fill is gone")
+  h.contains(explain.statusline(), "explain", "the session keeps running")
+  explain.next() -- moving between steps keeps them hidden
+  vim.wait(50)
+  h.eq(0, fills())
+  explain.toggle_highlights()
+  vim.wait(50)
+  h.eq(1, fills(), "fill is back")
+  explain.stop()
+end
+
 cases["agents read ranges where the human's edits moved them"] = function()
   fresh()
   explain.setup({ nudge = false })
